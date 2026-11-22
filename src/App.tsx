@@ -1,9 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { BUCKET, isConfigured, supabase } from './lib/supabase'
+import { BUCKET, isConfigured, openedFromRecoveryLink, supabase } from './lib/supabase'
 import type { Asset, AssetKind } from './types'
 import { extensionOf, formatBytes } from './types'
 import Login from './components/Login'
+import NewPassword from './components/NewPassword'
 import Uploader from './components/Uploader'
 import AssetDetail from './components/AssetDetail'
 
@@ -16,13 +17,17 @@ const URL_TTL = 60 * 60 // URLs signées valables 1 h
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState(false)
+  const [recovery, setRecovery] = useState(openedFromRecoveryLink)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
       setReady(true)
     })
-    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
+    const { data } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s)
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true)
+    })
     return () => data.subscription.unsubscribe()
   }, [])
 
@@ -39,6 +44,7 @@ export default function App() {
       </div>
     )
   if (!ready) return null
+  if (recovery && session) return <NewPassword onDone={() => setRecovery(false)} />
   if (!session) return <Login />
   return <Library session={session} />
 }
@@ -147,12 +153,12 @@ function Library({ session }: { session: Session }) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="segmented">
-          {(['all', 'image', 'pdf', 'other'] as const).map((k) => (
+          {(['all', 'image', 'pdf'] as const).map((k) => (
             <button key={k} className={kind === k ? 'active' : ''} onClick={() => {
                 setKind(k)
                 setPage(0)
               }}>
-              {k === 'all' ? 'Tout' : k === 'image' ? 'Photos' : k === 'pdf' ? 'PDF' : 'Autres'}
+              {k === 'all' ? 'Tout' : k === 'image' ? 'Photos' : 'PDF'}
             </button>
           ))}
         </div>
@@ -202,9 +208,7 @@ function Library({ session }: { session: Session }) {
                   ) : a.kind === 'image' && a.file_path && urls[a.file_path] ? (
                     <img src={urls[a.file_path]} alt={a.title} loading="lazy" />
                   ) : (
-                    <span className={`pdf-badge${a.kind === 'other' ? ' other' : ''}`}>
-                      {a.kind === 'pdf' ? 'PDF' : extensionOf(a.file_name)}
-                    </span>
+                    <span className="pdf-badge">{a.kind === 'pdf' ? 'PDF' : extensionOf(a.file_name)}</span>
                   )}
                   {a.drive_file_id && <span className="drive-badge">Drive</span>}
                   {a.ai_status === 'pending' && <span className="ai-badge">✨ Analyse…</span>}

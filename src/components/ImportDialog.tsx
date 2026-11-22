@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { booleanColumns, buildRows, fileKey, guessColumns, pickRow, type Columns, type ImportRow } from '../lib/importMetadata'
 import { readTable } from '../lib/readTable'
 import { connectDrive, DriveAuthError, hasToken, isDriveConfigured } from '../lib/google'
-import { buildDriveRows, guessDriveColumns, importDriveRow, type DriveColumns, type DriveRow } from '../lib/driveImport'
+import { buildDriveRows, guessDriveColumns, importDriveRow, UnreadableFormatError, type DriveColumns, type DriveRow } from '../lib/driveImport'
 
 interface Props {
   userId: string
@@ -24,6 +24,7 @@ interface DriveProgress {
   state: 'idle' | 'running' | 'paused' | 'done'
   total: number
   done: number
+  skipped: number
   failed: { name: string; error: string }[]
   message: string | null
 }
@@ -56,7 +57,7 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
   const [done, setDone] = useState(false)
   const [driveCols, setDriveCols] = useState<DriveColumns>({ id: -1, link: -1, path: -1 })
   const [skipCopies, setSkipCopies] = useState(true)
-  const [drive, setDrive] = useState<DriveProgress>({ state: 'idle', total: 0, done: 0, failed: [], message: null })
+  const [drive, setDrive] = useState<DriveProgress>({ state: 'idle', total: 0, done: 0, skipped: 0, failed: [], message: null })
   const queueRef = useRef<DriveRow[] | null>(null)
   const indexRef = useRef(0)
   const stopRef = useRef(false)
@@ -84,7 +85,7 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
       setDriveCols(header ? guessDriveColumns(rows[0]) : { id: -1, link: -1, path: -1 })
       queueRef.current = null
       indexRef.current = 0
-      setDrive({ state: 'idle', total: 0, done: 0, failed: [], message: null })
+      setDrive({ state: 'idle', total: 0, done: 0, skipped: 0, failed: [], message: null })
     } catch (e) {
       setError(`Lecture impossible : ${e instanceof Error ? e.message : e}. Utilisez un fichier .xlsx ou .csv.`)
     }
@@ -118,11 +119,11 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
     }
   }, [assets, rows])
 
-  const driveRows = useMemo(
+  const { rows: driveRows, unreadable } = useMemo(
     () =>
       cols.file >= 0 && (driveCols.id >= 0 || driveCols.link >= 0)
         ? buildDriveRows(headers, hasHeader ? table.slice(1) : table, cols, driveCols, flagCols, skipCopies)
-        : [],
+        : { rows: [], unreadable: 0 },
     [headers, table, hasHeader, cols, driveCols, flagCols, skipCopies],
   )
 
@@ -166,7 +167,9 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
           await importDriveRow(row, userId)
           setDrive((d) => ({ ...d, done: d.done + 1 }))
         } catch (e) {
-          if (e instanceof DriveAuthError) {
+          if (e instanceof UnreadableFormatError) {
+            setDrive((d) => ({ ...d, skipped: d.skipped + 1 }))
+          } else if (e instanceof DriveAuthError) {
             queue.push(row) // à refaire après reconnexion
             authLost = true
             stopRef.current = true
@@ -404,12 +407,19 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
                   <strong>{driveRows.length}</strong> fichier{driveRows.length > 1 ? 's' : ''} Drive ·{' '}
                   <strong>{assets ? driveRows.length - driveTodo.length : '…'}</strong> déjà dans l'app ·{' '}
                   <strong>{assets ? driveTodo.length : '…'}</strong> à cataloguer
+                  {unreadable > 0 && (
+                    <>
+                      {' '}
+                      · <strong>{unreadable}</strong> ignoré{unreadable > 1 ? 's' : ''} (PSD, AI, EPS… non lisibles)
+                    </>
+                  )}
                 </p>
                 {drive.state !== 'idle' && (
                   <>
-                    <progress max={drive.total || 1} value={drive.done + drive.failed.length} />
+                    <progress max={drive.total || 1} value={drive.done + drive.skipped + drive.failed.length} />
                     <p className="small">
                       {drive.done} catalogué{drive.done > 1 ? 's' : ''}
+                      {drive.skipped > 0 && <> · {drive.skipped} ignoré{drive.skipped > 1 ? 's' : ''} (format non lisible)</>}
                       {drive.failed.length > 0 && <> · {drive.failed.length} en erreur</>} sur {drive.total}
                       {drive.state === 'done' && ' — terminé ✓'}
                     </p>

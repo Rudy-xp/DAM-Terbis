@@ -3,7 +3,8 @@ import { BUCKET, supabase } from '../lib/supabase'
 import { queueAnalysis } from '../lib/ai'
 import { lookupImported } from '../lib/importMetadata'
 import type { AssetKind } from '../types'
-import { AI_ENABLED, parseTags } from '../types'
+import { AI_ENABLED } from '../types'
+import TagEditor from './TagEditor'
 import { imagePreview, pdfPreview } from '../lib/preview'
 
 const MAX_BYTES = 50 * 1024 * 1024
@@ -28,7 +29,7 @@ function kindOf(file: File): AssetKind | null {
 export default function Uploader({ userId, onUploaded }: Props) {
   const [autoAnalyze, setAutoAnalyze] = useState(AI_ENABLED)
   const input = useRef<HTMLInputElement>(null)
-  const [tags, setTags] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [dragging, setDragging] = useState(false)
 
@@ -64,7 +65,7 @@ export default function Uploader({ userId, onUploaded }: Props) {
     const { data: inserted, error: dbErr } = await supabase.from('assets').insert({
       title: file.name.replace(/\.[^.]+$/, ''),
       description: imported?.description ?? null,
-      tags: [...new Set([...parseTags(tags), ...(imported?.tags ?? [])])],
+      tags: [...new Set([...tags, ...(imported?.tags ?? [])])],
       kind,
       file_path: path,
       file_name: file.name,
@@ -141,10 +142,10 @@ export default function Uploader({ userId, onUploaded }: Props) {
           ✨ Générer automatiquement la description et les mots-clés (IA)
         </label>
       )}
-      <label className="inline">
-        Tags appliqués à l'envoi
-        <input placeholder="ex. chantier, 2026, client-x" value={tags} onChange={(e) => setTags(e.target.value)} />
-      </label>
+      <div className="field">
+        <span className="field-label">Mots-clés ajoutés à tous les fichiers envoyés</span>
+        <TagEditor tags={tags} onChange={setTags} />
+      </div>
       {jobs.length > 0 && (
         <div className="jobs">
           <div className="jobs-head">

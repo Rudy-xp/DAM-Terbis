@@ -1,4 +1,4 @@
-export type AssetKind = 'image' | 'pdf' | 'other'
+export type AssetKind = 'image' | 'pdf'
 
 export interface Asset {
   id: string

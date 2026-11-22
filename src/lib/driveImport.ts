@@ -20,6 +20,17 @@ export function guessDriveColumns(headers: string[]): DriveColumns {
   return { id: find(DRIVE_ID), link: find(DRIVE_LINK), path: full >= 0 ? full : find(SOURCE_PATH) }
 }
 
+/** Formats lisibles dans le navigateur ; les autres (PSD, AI, EPS…) sont ignorés. */
+const READABLE_EXT = /\.(jpe?g|png|gif|webp|avif|heic|heif|bmp|svg|pdf)$/i
+const HAS_EXT = /\.[a-z0-9]{1,10}$/i
+
+export function isReadableName(name: string): boolean {
+  // Sans extension (ex. « 207A_3 ») : le type sera vérifié auprès de Drive.
+  return READABLE_EXT.test(name) || !HAS_EXT.test(name)
+}
+
+export class UnreadableFormatError extends Error {}
+
 export interface DriveRow {
   driveId: string
   name: string
@@ -39,7 +50,8 @@ export function buildDriveRows(
   driveCols: DriveColumns,
   flagCols: number[],
   skipCopies: boolean,
-): DriveRow[] {
+): { rows: DriveRow[]; unreadable: number } {
+  let unreadable = 0
   const seenIds = new Set<string>()
   const seenCopies = new Set<string>()
   const out: DriveRow[] = []
@@ -49,6 +61,10 @@ export function buildDriveRows(
     const name = cell(cols.file)
     if (!driveId || !name || seenIds.has(driveId)) continue
     seenIds.add(driveId)
+    if (!isReadableName(name)) {
+      unreadable++
+      continue
+    }
     const rawSize = Number(cell(cols.size).replace(/\s/g, ''))
     const size = Number.isFinite(rawSize) && rawSize > 0 ? Math.round(rawSize) : null
     if (skipCopies && size) {
@@ -69,17 +85,17 @@ export function buildDriveRows(
       link: cell(driveCols.link) || null,
     })
   }
-  return out
+  return { rows: out, unreadable }
 }
 
 const PREVIEW_DOWNLOAD_MAX = 60_000_000 // au-delà, pas de téléchargement complet pour l'aperçu
 
 const PHOTO_TYPES = /^image\/(jpeg|png|gif|webp|avif|heic|heif|bmp|svg\+xml)$/
 
-function kindOf(mime: string): AssetKind {
+function kindOf(mime: string): AssetKind | null {
   if (mime === 'application/pdf') return 'pdf'
   if (PHOTO_TYPES.test(mime)) return 'image'
-  return 'other' // PSD, AI, EPS, fichiers Affinity, dessins Google…
+  return null // PSD, AI, EPS, fichiers Affinity, dessins Google… : non lisibles
 }
 
 /** Catalogue un fichier Drive : aperçu JPEG dans Supabase, original laissé dans Drive. */
@@ -87,13 +103,14 @@ export async function importDriveRow(row: DriveRow, userId: string): Promise<voi
   const file = await getDriveFile(row.driveId)
   const mime = file.mimeType
   const kind = kindOf(mime)
+  if (!kind) throw new UnreadableFormatError(`Format non lisible (${mime})`)
   const size = Number(file.size ?? row.size ?? 0)
 
   // 1. Aperçu : vignette Google si possible, sinon génération à partir de l'original
   let preview: Preview | null = null
   const thumb = await fetchDriveThumbnail(file)
   if (thumb) preview = await imagePreview(thumb)
-  if (!preview?.jpeg && size > 0 && size <= PREVIEW_DOWNLOAD_MAX && kind !== 'other') {
+  if (!preview?.jpeg && size > 0 && size <= PREVIEW_DOWNLOAD_MAX) {
     const blob = await downloadDriveFile(row.driveId)
     preview = kind === 'pdf' ? await pdfPreview(blob) : await imagePreview(blob)
   }

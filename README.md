@@ -6,12 +6,13 @@ Web app de gestion d'une base de photos et de PDF.
 
 ## Fonctionnalités
 
-- Connexion / création de compte (e-mail + mot de passe)
+- Connexion / création de compte (e-mail + mot de passe), réinitialisation du mot de passe par e-mail
 - Envoi multiple par glisser-déposer (images et PDF, 50 Mo max par fichier), avec tags appliqués à l'envoi
 - Grille de vignettes paginée, filtres Photos / PDF / Mes fichiers, filtre par tag
 - Recherche par titre, description, nom de fichier ou tag
 - Fiche détail : aperçu (image ou PDF intégré), édition titre / description / tags, téléchargement, suppression
-- **Import depuis Google Drive** à partir d'un inventaire (Excel/CSV avec les identifiants Drive) : les originaux restent dans Drive, l'app stocke un aperçu léger + le lien « Ouvrir dans Drive »
+- **Mots-clés en étiquettes** (Entrée pour ajouter, × pour retirer), à l'envoi et dans la fiche
+- **Import depuis Google Drive** à partir d'un inventaire (Excel/CSV avec les identifiants Drive) : les originaux restent dans Drive, l'app stocke un aperçu léger + le lien « Ouvrir dans Drive » ; seuls les photos et PDF sont catalogués (PSD, AI, EPS… ignorés)
 - Aperçus automatiques : photos et 1re page des PDF
 - *(désactivé par défaut)* description et mots-clés générés par l'IA (Google Gemini), activable avec `VITE_AI_ENABLED=true`
 - **Import de descriptions** depuis un fichier Excel (.xlsx) ou CSV, associées aux fichiers par leur nom (extension ignorée) et leur taille (pour distinguer les homonymes), pour les fichiers existants et les prochains envois ; colonnes « Lieu » et Vrai/Faux (Carte postale, Église…) converties en mots-clés
