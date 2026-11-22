@@ -1,4 +1,4 @@
-import { useId, useState, type KeyboardEvent } from 'react'
+import { useMemo, useState, type KeyboardEvent } from 'react'
 import { parseTags } from '../types'
 
 interface Props {
@@ -9,16 +9,27 @@ interface Props {
   suggestions?: string[]
   /** En lecture seule : clic sur un mot-clé (ex. pour filtrer) */
   onTagClick?: (tag: string) => void
+  placeholder?: string
 }
 
-export default function TagEditor({ tags, onChange, disabled, suggestions, onTagClick }: Props) {
+export default function TagEditor({ tags, onChange, disabled, suggestions, onTagClick, placeholder }: Props) {
   const [draft, setDraft] = useState('')
-  const listId = useId()
+  const [open, setOpen] = useState(false)
+
+  const matches = useMemo(() => {
+    if (!suggestions?.length) return []
+    const q = draft.trim().toLowerCase()
+    return suggestions.filter((s) => !tags.includes(s) && (!q || s.includes(q))).slice(0, 12)
+  }, [suggestions, tags, draft])
+
+  function add(values: string[]) {
+    const added = values.filter((v) => !tags.includes(v))
+    if (added.length) onChange([...tags, ...added])
+    setDraft('')
+  }
 
   function commit() {
-    const added = parseTags(draft)
-    if (added.length) onChange([...new Set([...tags, ...added])])
-    setDraft('')
+    add(parseTags(draft))
   }
 
   function onKey(e: KeyboardEvent<HTMLInputElement>) {
@@ -27,7 +38,7 @@ export default function TagEditor({ tags, onChange, disabled, suggestions, onTag
       commit()
     } else if (e.key === 'Backspace' && !draft && tags.length) {
       onChange(tags.slice(0, -1))
-    }
+    } else if (e.key === 'Escape') setOpen(false)
   }
 
   return (
@@ -48,24 +59,35 @@ export default function TagEditor({ tags, onChange, disabled, suggestions, onTag
           )}
         </span>
       ))}
+      {disabled && !tags.length && <span className="muted small">Aucun</span>}
       {!disabled && (
-        <input
-          value={draft}
-          placeholder={tags.length ? 'Ajouter…' : 'Ajouter un mot-clé puis Entrée'}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKey}
-          onBlur={commit}
-          list={suggestions?.length ? listId : undefined}
-        />
-      )}
-      {!disabled && suggestions && suggestions.length > 0 && (
-        <datalist id={listId}>
-          {suggestions
-            .filter((s) => !tags.includes(s))
-            .map((s) => (
-              <option key={s} value={s} />
-            ))}
-        </datalist>
+        <div className="tag-input">
+          <input
+            value={draft}
+            placeholder={placeholder ?? (tags.length ? 'Ajouter…' : 'Ajouter un mot-clé puis Entrée')}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              setOpen(true)
+            }}
+            onKeyDown={onKey}
+            onFocus={() => setOpen(true)}
+            onBlur={() => {
+              setOpen(false)
+              commit()
+            }}
+          />
+          {open && matches.length > 0 && (
+            <ul className="suggestions" role="listbox">
+              {matches.map((s) => (
+                <li key={s}>
+                  <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => add([s])}>
+                    <span>{s}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   )

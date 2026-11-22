@@ -408,9 +408,10 @@ export default function Library({ userId, role, collection, onCollectionChanged,
           thumbUrl={selected.thumb_path ? urls[selected.thumb_path] : undefined}
           canEdit={canEditAsset(role, userId, selected)}
           allTags={allTags}
+          userId={userId}
+          role={role}
           onClose={() => setSelected(null)}
           onChanged={reload}
-          onAddToCollection={() => setPicker([selected.id])}
           onTagClick={(t) => {
             setSelected(null)
             if (!tags.includes(t)) setTags([...tags, t])

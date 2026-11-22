@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { BUCKET, supabase } from '../lib/supabase'
 import { analyzeAsset } from '../lib/ai'
-import type { Asset, TagCount } from '../types'
+import type { Asset, Role, TagCount } from '../types'
 import { AI_ENABLED, formatBytes } from '../types'
 import TagEditor from './TagEditor'
+import AssetCollections from './AssetCollections'
 
 interface Props {
   asset: Asset
@@ -11,9 +12,10 @@ interface Props {
   thumbUrl: string | undefined
   canEdit: boolean
   allTags: TagCount[]
+  userId: string
+  role: Role
   onClose: () => void
   onChanged: () => void
-  onAddToCollection: () => void
   onTagClick: (tag: string) => void
 }
 
@@ -23,9 +25,10 @@ export default function AssetDetail({
   thumbUrl,
   canEdit,
   allTags,
+  userId,
+  role,
   onClose,
   onChanged,
-  onAddToCollection,
   onTagClick,
 }: Props) {
   const [title, setTitle] = useState(asset.title)
@@ -34,6 +37,7 @@ export default function AssetDetail({
   const [busy, setBusy] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [tagsSaved, setTagsSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -42,12 +46,27 @@ export default function AssetDetail({
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
 
+  // Les mots-clés sont enregistrés immédiatement
+  async function changeTags(next: string[]) {
+    const previous = tags
+    setTags(next)
+    setError(null)
+    const { error } = await supabase.from('assets').update({ tags: next }).eq('id', asset.id)
+    if (error) {
+      setTags(previous)
+      return setError(error.message)
+    }
+    setTagsSaved(true)
+    setTimeout(() => setTagsSaved(false), 1500)
+    onChanged()
+  }
+
   async function save() {
     setBusy(true)
     setError(null)
     const { error } = await supabase
       .from('assets')
-      .update({ title: title.trim() || asset.file_name, description: description.trim() || null, tags })
+      .update({ title: title.trim() || asset.file_name, description: description.trim() || null })
       .eq('id', asset.id)
     setBusy(false)
     if (error) return setError(error.message)
@@ -138,15 +157,18 @@ export default function AssetDetail({
             />
           </label>
           <div className="field">
-            <span className="field-label">Mots-clés</span>
+            <span className="field-label">
+              Mots-clés {tagsSaved && <span className="info small">· enregistré ✓</span>}
+            </span>
             <TagEditor
               tags={tags}
-              onChange={setTags}
+              onChange={changeTags}
               disabled={!canEdit || analyzing}
               suggestions={allTags.map((t) => t.tag)}
               onTagClick={onTagClick}
             />
           </div>
+          <AssetCollections assetId={asset.id} userId={userId} role={role} />
           {canEdit && AI_ENABLED && (
             <div className="ai-row">
               <button className="ai" onClick={generate} disabled={analyzing || busy}>
@@ -184,11 +206,10 @@ export default function AssetDetail({
           {error && <p className="error">{error}</p>}
           <div className="actions">
             <button onClick={download}>{asset.file_path ? 'Télécharger' : 'Ouvrir dans Drive'}</button>
-            <button onClick={onAddToCollection}>+ Collection</button>
             {canEdit && (
               <>
                 <button className="primary" onClick={save} disabled={busy || analyzing}>
-                  {saved ? 'Enregistré ✓' : 'Enregistrer'}
+                  {saved ? 'Enregistré ✓' : 'Enregistrer titre et description'}
                 </button>
                 <button className="danger" onClick={remove} disabled={busy}>
                   Supprimer
