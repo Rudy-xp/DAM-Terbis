@@ -1,12 +1,12 @@
-// Analyse une photo ou un PDF avec Claude et enregistre une description
-// et des mots-clés (fusionnés avec les tags existants, qui restent éditables).
-import Anthropic from 'npm:@anthropic-ai/sdk@1.12.0'
+// Analyse une photo ou un PDF avec Google Gemini (offre gratuite) et enregistre
+// une description et des mots-clés (fusionnés avec les tags existants, qui restent éditables).
 import { createClient } from 'npm:@supabase/supabase-js@2.119.2'
 
-const MODEL = 'claude-opus-5-5'
-const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
-const MAX_IMAGE_BYTES = 3_700_000 // ~5 Mo une fois encodé en base64
-const MAX_PDF_BYTES = 23_000_000 // ~32 Mo une fois encodé en base64
+// Modèle modifiable sans redéployer via le secret GEMINI_MODEL.
+// "gemini-flash-latest" suit automatiquement le dernier modèle Flash (offre gratuite).
+const MODEL = Deno.env.get('GEMINI_MODEL') || 'gemini-flash-latest'
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'])
+const MAX_INLINE_BYTES = 14_000_000 // requête Gemini limitée à ~20 Mo une fois encodée en base64
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -19,14 +19,13 @@ Pour le fichier fourni, réponds en français :
 - "description" : 1 à 3 phrases factuelles qui décrivent le contenu (sujet, lieu, éléments visibles, ambiance pour une photo ; type de document, objet, émetteur et dates clés pour un PDF). Pas de formule du type « Cette image montre ». N'invente rien qui ne soit pas visible.
 - "tags" : 5 à 12 mots-clés utiles pour retrouver le fichier par recherche, en minuscules, au singulier, sans « # », un à trois mots chacun.`
 
-const SCHEMA = {
-  type: 'object',
+const RESPONSE_SCHEMA = {
+  type: 'OBJECT',
   properties: {
-    description: { type: 'string' },
-    tags: { type: 'array', items: { type: 'string' } },
+    description: { type: 'STRING' },
+    tags: { type: 'ARRAY', items: { type: 'STRING' } },
   },
   required: ['description', 'tags'],
-  additionalProperties: false,
 }
 
 function json(body: unknown, status = 200) {
@@ -46,7 +45,7 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 function normalizeTags(tags: string[]): string[] {
-  return [...new Set(tags.map((t) => t.trim().toLowerCase().replace(/^#/, '')).filter(Boolean))]
+  return [...new Set(tags.map((t) => String(t).trim().toLowerCase().replace(/^#/, '')).filter(Boolean))]
 }
 
 Deno.serve(async (req) => {
@@ -77,19 +76,22 @@ Deno.serve(async (req) => {
     return json({ error: message }, status)
   }
 
-  // Choix de la source : vignette JPEG pour les images, fichier original pour les PDF.
+  const apiKey = Deno.env.get('GEMINI_API_KEY')
+  if (!apiKey) return fail('Clé GEMINI_API_KEY absente dans les secrets Supabase', 500)
+
+  // Source : vignette JPEG pour les photos, fichier original pour les PDF.
   let path: string
-  let mediaType: string
+  let mimeType: string
   if (asset.kind === 'pdf') {
-    if (asset.size_bytes > MAX_PDF_BYTES) return fail('PDF trop volumineux pour l’analyse (23 Mo max)', 422)
+    if (asset.size_bytes > MAX_INLINE_BYTES) return fail('PDF trop volumineux pour l’analyse (14 Mo max)', 422)
     path = asset.file_path
-    mediaType = 'application/pdf'
+    mimeType = 'application/pdf'
   } else if (asset.thumb_path) {
     path = asset.thumb_path
-    mediaType = 'image/jpeg'
-  } else if (IMAGE_TYPES.has(asset.mime_type) && asset.size_bytes <= MAX_IMAGE_BYTES) {
+    mimeType = 'image/jpeg'
+  } else if (IMAGE_TYPES.has(asset.mime_type) && asset.size_bytes <= MAX_INLINE_BYTES) {
     path = asset.file_path
-    mediaType = asset.mime_type
+    mimeType = asset.mime_type
   } else {
     return fail('Format ou taille d’image non pris en charge pour l’analyse', 422)
   }
@@ -98,41 +100,48 @@ Deno.serve(async (req) => {
   if (dlErr || !blob) return fail('Téléchargement du fichier impossible')
   const data = toBase64(new Uint8Array(await blob.arrayBuffer()))
 
-  const fileBlock: Anthropic.Beta.BetaContentBlockParam =
-    mediaType === 'application/pdf'
-      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
-      : {
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp', data },
-        }
-
-  const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY') })
   let result: { description: string; tags: string[] }
   try {
-    const response = await anthropic.beta.messages.create({
-      model: MODEL,
-      max_tokens: 4000,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      output_config: { effort: 'low', format: { type: 'json_schema', schema: SCHEMA } },
-      system: SYSTEM,
-      messages: [
-        {
-          role: 'user',
-          content: [fileBlock, { type: 'text', text: `Nom du fichier : ${asset.file_name}` }],
-        },
-      ],
-    })
-    if (response.stop_reason === 'refusal') return fail('L’IA a refusé d’analyser ce fichier', 422)
-    if (response.stop_reason === 'max_tokens') return fail('Réponse de l’IA incomplète')
-    const text = response.content.find((b) => b.type === 'text')
-    if (!text || text.type !== 'text') return fail('Réponse de l’IA vide')
-    result = JSON.parse(text.text)
-  } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) return fail('Clé API Anthropic invalide ou absente')
-    if (err instanceof Anthropic.RateLimitError) return fail('Limite de requêtes IA atteinte, réessayez plus tard', 429)
-    if (err instanceof Anthropic.APIError) return fail(`Erreur IA (${err.status ?? '?'}) : ${err.message}`)
-    return fail('Erreur lors de l’analyse IA')
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { inlineData: { mimeType, data } },
+                { text: `Nom du fichier : ${asset.file_name}` },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            responseSchema: RESPONSE_SCHEMA,
+          },
+        }),
+      },
+    )
+    const body = await res.json().catch(() => null)
+    if (!res.ok) {
+      const msg = body?.error?.message ?? res.statusText
+      if (res.status === 429) return fail('Quota gratuit Gemini atteint, réessayez dans une minute', 429)
+      if (res.status === 400 && /api key/i.test(msg)) return fail('Clé GEMINI_API_KEY invalide')
+      return fail(`Erreur Gemini (${res.status}) : ${msg}`)
+    }
+    if (body?.promptFeedback?.blockReason) return fail(`Analyse bloquée par Gemini (${body.promptFeedback.blockReason})`, 422)
+    const candidate = body?.candidates?.[0]
+    const text: string | undefined = candidate?.content?.parts
+      ?.map((p: { text?: string }) => p.text ?? '')
+      .join('')
+    if (!text) return fail(`Réponse Gemini vide (${candidate?.finishReason ?? 'inconnue'})`)
+    result = JSON.parse(text)
+    if (typeof result.description !== 'string' || !Array.isArray(result.tags)) throw new Error('format')
+  } catch {
+    return fail('Réponse de Gemini illisible ou service injoignable')
   }
 
   const description = result.description.trim()

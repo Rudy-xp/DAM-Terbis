@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { BUCKET, isConfigured, supabase } from './lib/supabase'
 import type { Asset, AssetKind } from './types'
@@ -6,6 +6,9 @@ import { formatBytes } from './types'
 import Login from './components/Login'
 import Uploader from './components/Uploader'
 import AssetDetail from './components/AssetDetail'
+
+// Chargé à la demande (bibliothèques Excel/CSV)
+const ImportDialog = lazy(() => import('./components/ImportDialog'))
 
 const PAGE_SIZE = 48
 const URL_TTL = 60 * 60 // URLs signées valables 1 h
@@ -55,6 +58,7 @@ function Library({ session }: { session: Session }) {
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState<Asset | null>(null)
   const [showUpload, setShowUpload] = useState(false)
+  const [showImport, setShowImport] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -122,6 +126,7 @@ function Library({ session }: { session: Session }) {
         <button className="primary" onClick={() => setShowUpload((v) => !v)}>
           {showUpload ? 'Fermer' : '+ Ajouter'}
         </button>
+        <button onClick={() => setShowImport(true)}>Importer descriptions</button>
         <span className="muted small user">{session.user.email}</span>
         <button onClick={() => supabase.auth.signOut()}>Déconnexion</button>
       </header>
@@ -219,6 +224,12 @@ function Library({ session }: { session: Session }) {
             Suivant →
           </button>
         </nav>
+      )}
+
+      {showImport && (
+        <Suspense fallback={null}>
+          <ImportDialog userId={userId} onClose={() => setShowImport(false)} onDone={load} />
+        </Suspense>
       )}
 
       {selected && (

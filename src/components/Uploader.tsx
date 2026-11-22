@@ -1,6 +1,7 @@
 import { useRef, useState, type DragEvent } from 'react'
 import { BUCKET, supabase } from '../lib/supabase'
 import { queueAnalysis } from '../lib/ai'
+import { lookupImported } from '../lib/importMetadata'
 import type { AssetKind } from '../types'
 import { parseTags } from '../types'
 
@@ -93,9 +94,14 @@ export default function Uploader({ userId, onUploaded }: Props) {
       if (!error) thumbPath = tp
     }
 
+    // Description importée (fichier Excel / CSV) prioritaire sur l'IA
+    const imported = await lookupImported(file.name)
+    const analyze = autoAnalyze && !imported?.description
+
     const { data: inserted, error: dbErr } = await supabase.from('assets').insert({
       title: file.name.replace(/\.[^.]+$/, ''),
-      tags: parseTags(tags),
+      description: imported?.description ?? null,
+      tags: [...new Set([...parseTags(tags), ...(imported?.tags ?? [])])],
       kind,
       file_path: path,
       file_name: file.name,
@@ -104,14 +110,14 @@ export default function Uploader({ userId, onUploaded }: Props) {
       width: meta?.width ?? null,
       height: meta?.height ?? null,
       thumb_path: thumbPath,
-      ai_status: autoAnalyze ? 'pending' : null,
+      ai_status: analyze ? 'pending' : null,
     }).select('id').single()
     if (dbErr) {
       await supabase.storage.from(BUCKET).remove(thumbPath ? [path, thumbPath] : [path])
       return update({ status: 'error', error: dbErr.message })
     }
     update({ status: 'done' })
-    if (autoAnalyze) queueAnalysis(inserted.id, onUploaded)
+    if (analyze) queueAnalysis(inserted.id, onUploaded)
   }
 
   async function handleFiles(list: FileList | null) {

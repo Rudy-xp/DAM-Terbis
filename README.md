@@ -11,7 +11,8 @@ Web app de gestion d'une base de photos et de PDF.
 - Grille de vignettes paginée, filtres Photos / PDF / Mes fichiers, filtre par tag
 - Recherche par titre, description, nom de fichier ou tag
 - Fiche détail : aperçu (image ou PDF intégré), édition titre / description / tags, téléchargement, suppression
-- **Description et mots-clés générés par l'IA** (Claude) à l'envoi, modifiables ensuite ; bouton « Régénérer avec l'IA »
+- **Description et mots-clés générés par l'IA** (Google Gemini, offre gratuite) à l'envoi, modifiables ensuite ; bouton « Régénérer avec l'IA »
+- **Import de descriptions** depuis un fichier Excel (.xlsx) ou CSV, associées aux fichiers par leur nom (extension ignorée), pour les fichiers existants et les prochains envois
 - Bibliothèque partagée entre les utilisateurs connectés ; seul l'auteur d'un envoi peut le modifier ou le supprimer
 
 ## Architecture Supabase
@@ -22,7 +23,8 @@ Web app de gestion d'une base de photos et de PDF.
 | Bucket `assets` (privé) | fichiers rangés sous `<user_id>/<uuid>.<ext>`, accès via URL signées (1 h) |
 | RLS | lecture : tout utilisateur connecté ; écriture / suppression : propriétaire uniquement ; aucun accès anonyme |
 
-| Edge Function `analyze-asset` | envoie la vignette (photo) ou le PDF à Claude, enregistre la description et fusionne les mots-clés avec les tags existants |
+| Edge Function `analyze-asset` | envoie la vignette (photo) ou le PDF à Gemini, enregistre la description et fusionne les mots-clés avec les tags existants |
+| Table `public.imported_metadata` | descriptions importées, indexées par nom de fichier normalisé (propriétaire uniquement) |
 
 Le schéma est versionné dans `supabase/migrations/` (déjà appliqué sur le projet `fpoxrpybabtgzravwyea`).
 Pour un autre projet : `supabase link --project-ref <ref>` puis `supabase db push`, ou coller les fichiers SQL dans l'éditeur SQL.
@@ -30,8 +32,11 @@ Pour un autre projet : `supabase link --project-ref <ref>` puis `supabase db pus
 ## Analyse IA
 
 - Code : `supabase/functions/analyze-asset/index.ts` (déployée avec `supabase functions deploy analyze-asset`).
-- Secret requis : `ANTHROPIC_API_KEY` (Supabase → Edge Functions → Secrets), clé créée sur console.anthropic.com.
-- Les photos sont analysées à partir d'une vignette JPEG (1568 px max) générée dans le navigateur ; les PDF jusqu'à 23 Mo.
+- Secret requis : `GEMINI_API_KEY` (Supabase → Edge Functions → Secrets), clé gratuite créée sur aistudio.google.com.
+- Secret facultatif : `GEMINI_MODEL` pour changer de modèle (par défaut `gemini-flash-latest`).
+- Offre gratuite : quotas limités par minute et par jour ; Google peut utiliser les contenus envoyés pour améliorer ses modèles.
+- Les photos sont analysées à partir d'une vignette JPEG (1568 px max) générée dans le navigateur ; les PDF jusqu'à 14 Mo.
+- Si une description importée existe pour le nom du fichier, elle est utilisée et l'IA n'est pas appelée.
 - Seul le propriétaire d'un fichier peut lancer l'analyse.
 
 ## Développement local
