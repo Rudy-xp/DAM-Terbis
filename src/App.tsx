@@ -88,11 +88,11 @@ function Library({ session }: { session: Session }) {
     const rows = (data ?? []) as Asset[]
     setAssets(rows)
     setTotal(count ?? 0)
+    // Garde la fiche ouverte à jour (ex. analyse IA terminée entre-temps)
+    setSelected((sel) => (sel ? (rows.find((r) => r.id === sel.id) ?? sel) : sel))
     if (rows.length) {
-      const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls(
-        rows.map((r) => r.file_path),
-        URL_TTL,
-      )
+      const paths = rows.flatMap((r) => (r.thumb_path ? [r.file_path, r.thumb_path] : [r.file_path]))
+      const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls(paths, URL_TTL)
       const map: Record<string, string> = {}
       signed?.forEach((s) => {
         if (s.path && s.signedUrl) map[s.path] = s.signedUrl
@@ -187,14 +187,16 @@ function Library({ session }: { session: Session }) {
             <li key={a.id}>
               <button className="tile" onClick={() => setSelected(a)}>
                 <div className="thumb">
-                  {a.kind === 'image' && urls[a.file_path] ? (
-                    <img src={urls[a.file_path]} alt={a.title} loading="lazy" />
+                  {a.kind === 'image' && urls[a.thumb_path ?? a.file_path] ? (
+                    <img src={urls[a.thumb_path ?? a.file_path]} alt={a.title} loading="lazy" />
                   ) : (
                     <span className="pdf-badge">{a.kind === 'pdf' ? 'PDF' : '…'}</span>
                   )}
+                  {a.ai_status === 'pending' && <span className="ai-badge">✨ Analyse…</span>}
                 </div>
                 <div className="tile-body">
                   <strong title={a.title}>{a.title}</strong>
+                  {a.description && <span className="tile-desc">{a.description}</span>}
                   <span className="muted small">
                     {formatBytes(a.size_bytes)} · {new Date(a.created_at).toLocaleDateString('fr-FR')}
                   </span>
@@ -221,7 +223,7 @@ function Library({ session }: { session: Session }) {
 
       {selected && (
         <AssetDetail
-          key={selected.id}
+          key={`${selected.id}-${selected.ai_generated_at ?? ''}`}
           asset={selected}
           url={urls[selected.file_path]}
           canEdit={selected.owner_id === userId}

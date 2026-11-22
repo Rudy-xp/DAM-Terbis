@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { BUCKET, supabase } from '../lib/supabase'
+import { analyzeAsset } from '../lib/ai'
 import type { Asset } from '../types'
-import { formatBytes, parseTags } from '../types'
+import { formatBytes } from '../types'
+import TagEditor from './TagEditor'
 
 interface Props {
   asset: Asset
@@ -14,8 +16,10 @@ interface Props {
 export default function AssetDetail({ asset, url, canEdit, onClose, onChanged }: Props) {
   const [title, setTitle] = useState(asset.title)
   const [description, setDescription] = useState(asset.description ?? '')
-  const [tags, setTags] = useState(asset.tags.join(', '))
+  const [tags, setTags] = useState<string[]>(asset.tags)
   const [busy, setBusy] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -29,11 +33,29 @@ export default function AssetDetail({ asset, url, canEdit, onClose, onChanged }:
     setError(null)
     const { error } = await supabase
       .from('assets')
-      .update({ title: title.trim() || asset.file_name, description: description.trim() || null, tags: parseTags(tags) })
+      .update({ title: title.trim() || asset.file_name, description: description.trim() || null, tags })
       .eq('id', asset.id)
     setBusy(false)
-    if (error) setError(error.message)
-    else onChanged()
+    if (error) return setError(error.message)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+    onChanged()
+  }
+
+  async function generate() {
+    if (description.trim() && !confirm('Remplacer la description actuelle par une description générée ?')) return
+    setAnalyzing(true)
+    setError(null)
+    try {
+      const result = await analyzeAsset(asset.id)
+      setDescription(result.description)
+      setTags(result.tags)
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setAnalyzing(false)
+    }
   }
 
   async function remove() {
@@ -44,7 +66,7 @@ export default function AssetDetail({ asset, url, canEdit, onClose, onChanged }:
       setBusy(false)
       return setError(dbErr.message)
     }
-    await supabase.storage.from(BUCKET).remove([asset.file_path])
+    await supabase.storage.from(BUCKET).remove(asset.thumb_path ? [asset.file_path, asset.thumb_path] : [asset.file_path])
     onChanged()
     onClose()
   }
@@ -79,12 +101,28 @@ export default function AssetDetail({ asset, url, canEdit, onClose, onChanged }:
           </label>
           <label>
             Description
-            <textarea rows={4} value={description} disabled={!canEdit} onChange={(e) => setDescription(e.target.value)} />
+            <textarea
+              rows={5}
+              value={description}
+              disabled={!canEdit || analyzing}
+              placeholder={asset.ai_status === 'pending' ? 'Génération en cours…' : ''}
+              onChange={(e) => setDescription(e.target.value)}
+            />
           </label>
-          <label>
-            Tags (séparés par des virgules)
-            <input value={tags} disabled={!canEdit} onChange={(e) => setTags(e.target.value)} />
-          </label>
+          <div className="field">
+            <span className="field-label">Mots-clés</span>
+            <TagEditor tags={tags} onChange={setTags} disabled={!canEdit || analyzing} />
+          </div>
+          {canEdit && (
+            <div className="ai-row">
+              <button className="ai" onClick={generate} disabled={analyzing || busy}>
+                {analyzing ? '✨ Analyse en cours…' : asset.ai_generated_at ? '✨ Régénérer avec l’IA' : '✨ Générer avec l’IA'}
+              </button>
+              {asset.ai_status === 'error' && !analyzing && (
+                <span className="error small">Dernière analyse échouée : {asset.ai_error}</span>
+              )}
+            </div>
+          )}
           <dl>
             <dt>Fichier</dt>
             <dd>{asset.file_name}</dd>
@@ -108,8 +146,8 @@ export default function AssetDetail({ asset, url, canEdit, onClose, onChanged }:
             <button onClick={download}>Télécharger</button>
             {canEdit && (
               <>
-                <button className="primary" onClick={save} disabled={busy}>
-                  Enregistrer
+                <button className="primary" onClick={save} disabled={busy || analyzing}>
+                  {saved ? 'Enregistré ✓' : 'Enregistrer'}
                 </button>
                 <button className="danger" onClick={remove} disabled={busy}>
                   Supprimer

@@ -145,3 +145,55 @@ label { display: grid; gap: 0.3rem; font-size: 0.9rem; font-weight: 500; }
   .modal { grid-template-columns: 1fr; grid-template-rows: 45vh auto; height: 100%; border-radius: 0; overflow: auto; }
   .meta { border-left: none; overflow: visible; }
 }
+
+/* Mots-clés éditables */
+.field { display: grid; gap: 0.3rem; }
+.field-label { font-size: 0.9rem; font-weight: 500; }
+.tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  min-height: 2.6rem;
+}
+.tag-editor:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; }
+.tag-editor input { flex: 1 1 120px; border: none; background: none; padding: 0.2rem 0.3rem; outline: none; min-width: 0; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.15rem 0.3rem 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+.tag-editor.disabled .chip { padding-right: 0.6rem; }
+.chip button { border: none; background: none; padding: 0 0.25rem; line-height: 1; color: var(--muted); font-size: 1rem; }
+.chip button:hover { color: var(--danger); }
+
+/* IA */
+.ai-row { display: grid; gap: 0.3rem; }
+button.ai { border-color: var(--accent); color: var(--accent); }
+.thumb { position: relative; }
+.ai-badge {
+  position: absolute;
+  left: 0.4rem;
+  bottom: 0.4rem;
+  background: rgb(0 0 0 / 0.65);
+  color: #fff;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+.tile-desc {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

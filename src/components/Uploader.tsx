@@ -1,5 +1,6 @@
 import { useRef, useState, type DragEvent } from 'react'
 import { BUCKET, supabase } from '../lib/supabase'
+import { queueAnalysis } from '../lib/ai'
 import type { AssetKind } from '../types'
 import { parseTags } from '../types'
 
@@ -22,23 +23,46 @@ function kindOf(file: File): AssetKind | null {
   return null
 }
 
-function imageSize(file: File): Promise<{ width: number; height: number } | null> {
+const THUMB_MAX = 1568
+
+/** Lit les dimensions et produit une vignette JPEG (grille + analyse IA). */
+function makeThumbnail(file: File): Promise<{ width: number; height: number; thumb: Blob | null } | null> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file)
     const img = new Image()
     img.onload = () => {
-      resolve({ width: img.naturalWidth, height: img.naturalHeight })
-      URL.revokeObjectURL(url)
+      const { naturalWidth: width, naturalHeight: height } = img
+      const scale = Math.min(1, THUMB_MAX / Math.max(width, height))
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(width * scale))
+      canvas.height = Math.max(1, Math.round(height * scale))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        URL.revokeObjectURL(url)
+        return resolve({ width, height, thumb: null })
+      }
+      ctx.fillStyle = '#fff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      canvas.toBlob(
+        (blob) => {
+          URL.revokeObjectURL(url)
+          resolve({ width, height, thumb: blob })
+        },
+        'image/jpeg',
+        0.85,
+      )
     }
     img.onerror = () => {
-      resolve(null)
       URL.revokeObjectURL(url)
+      resolve(null)
     }
     img.src = url
   })
 }
 
 export default function Uploader({ userId, onUploaded }: Props) {
+  const [autoAnalyze, setAutoAnalyze] = useState(true)
   const input = useRef<HTMLInputElement>(null)
   const [tags, setTags] = useState('')
   const [jobs, setJobs] = useState<Job[]>([])
@@ -53,15 +77,23 @@ export default function Uploader({ userId, onUploaded }: Props) {
     if (file.size > MAX_BYTES) return update({ status: 'error', error: 'Fichier > 50 Mo' })
 
     const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : kind === 'pdf' ? 'pdf' : 'bin'
-    const path = `${userId}/${crypto.randomUUID()}.${ext}`
-    const dims = kind === 'image' ? await imageSize(file) : null
+    const id = crypto.randomUUID()
+    const path = `${userId}/${id}.${ext}`
+    const meta = kind === 'image' ? await makeThumbnail(file) : null
 
     const { error: upErr } = await supabase.storage
       .from(BUCKET)
       .upload(path, file, { contentType: file.type, upsert: false })
     if (upErr) return update({ status: 'error', error: upErr.message })
 
-    const { error: dbErr } = await supabase.from('assets').insert({
+    let thumbPath: string | null = null
+    if (meta?.thumb) {
+      const tp = `${userId}/${id}_thumb.jpg`
+      const { error } = await supabase.storage.from(BUCKET).upload(tp, meta.thumb, { contentType: 'image/jpeg' })
+      if (!error) thumbPath = tp
+    }
+
+    const { data: inserted, error: dbErr } = await supabase.from('assets').insert({
       title: file.name.replace(/\.[^.]+$/, ''),
       tags: parseTags(tags),
       kind,
@@ -69,14 +101,17 @@ export default function Uploader({ userId, onUploaded }: Props) {
       file_name: file.name,
       mime_type: file.type,
       size_bytes: file.size,
-      width: dims?.width ?? null,
-      height: dims?.height ?? null,
-    })
+      width: meta?.width ?? null,
+      height: meta?.height ?? null,
+      thumb_path: thumbPath,
+      ai_status: autoAnalyze ? 'pending' : null,
+    }).select('id').single()
     if (dbErr) {
-      await supabase.storage.from(BUCKET).remove([path])
+      await supabase.storage.from(BUCKET).remove(thumbPath ? [path, thumbPath] : [path])
       return update({ status: 'error', error: dbErr.message })
     }
     update({ status: 'done' })
+    if (autoAnalyze) queueAnalysis(inserted.id, onUploaded)
   }
 
   async function handleFiles(list: FileList | null) {
@@ -131,6 +166,10 @@ export default function Uploader({ userId, onUploaded }: Props) {
           onChange={(e) => handleFiles(e.target.files)}
         />
       </div>
+      <label className="check">
+        <input type="checkbox" checked={autoAnalyze} onChange={(e) => setAutoAnalyze(e.target.checked)} />
+        ✨ Générer automatiquement la description et les mots-clés (IA)
+      </label>
       <label className="inline">
         Tags appliqués à l'envoi
         <input placeholder="ex. chantier, 2026, client-x" value={tags} onChange={(e) => setTags(e.target.value)} />

@@ -11,6 +11,7 @@ Web app de gestion d'une base de photos et de PDF.
 - Grille de vignettes paginée, filtres Photos / PDF / Mes fichiers, filtre par tag
 - Recherche par titre, description, nom de fichier ou tag
 - Fiche détail : aperçu (image ou PDF intégré), édition titre / description / tags, téléchargement, suppression
+- **Description et mots-clés générés par l'IA** (Claude) à l'envoi, modifiables ensuite ; bouton « Régénérer avec l'IA »
 - Bibliothèque partagée entre les utilisateurs connectés ; seul l'auteur d'un envoi peut le modifier ou le supprimer
 
 ## Architecture Supabase
@@ -21,8 +22,17 @@ Web app de gestion d'une base de photos et de PDF.
 | Bucket `assets` (privé) | fichiers rangés sous `<user_id>/<uuid>.<ext>`, accès via URL signées (1 h) |
 | RLS | lecture : tout utilisateur connecté ; écriture / suppression : propriétaire uniquement ; aucun accès anonyme |
 
+| Edge Function `analyze-asset` | envoie la vignette (photo) ou le PDF à Claude, enregistre la description et fusionne les mots-clés avec les tags existants |
+
 Le schéma est versionné dans `supabase/migrations/` (déjà appliqué sur le projet `fpoxrpybabtgzravwyea`).
 Pour un autre projet : `supabase link --project-ref <ref>` puis `supabase db push`, ou coller les fichiers SQL dans l'éditeur SQL.
+
+## Analyse IA
+
+- Code : `supabase/functions/analyze-asset/index.ts` (déployée avec `supabase functions deploy analyze-asset`).
+- Secret requis : `ANTHROPIC_API_KEY` (Supabase → Edge Functions → Secrets), clé créée sur console.anthropic.com.
+- Les photos sont analysées à partir d'une vignette JPEG (1568 px max) générée dans le navigateur ; les PDF jusqu'à 23 Mo.
+- Seul le propriétaire d'un fichier peut lancer l'analyse.
 
 ## Développement local
 

@@ -13,6 +13,10 @@ export interface Asset {
   size_bytes: number
   width: number | null
   height: number | null
+  thumb_path: string | null
+  ai_status: 'pending' | 'done' | 'error' | null
+  ai_error: string | null
+  ai_generated_at: string | null
   created_at: string
   updated_at: string
 }
