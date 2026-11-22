@@ -47,3 +47,36 @@ export function extensionOf(name: string): string {
   const m = name.match(/\.([a-z0-9]{1,8})$/i)
   return m ? m[1].toUpperCase() : 'FICHIER'
 }
+
+export type Role = 'admin' | 'contributor' | 'reader'
+
+export const ROLE_LABELS: Record<Role, string> = {
+  admin: 'Administrateur',
+  contributor: 'Contributeur',
+  reader: 'Lecteur',
+}
+
+export interface Collection {
+  id: string
+  owner_id: string
+  name: string
+  description: string | null
+  visibility: 'private' | 'public'
+  created_at: string
+  updated_at: string
+  item_count?: number
+}
+
+export interface TagCount {
+  tag: string
+  n: number
+}
+
+/** Peut modifier / supprimer ce fichier ? */
+export function canEditAsset(role: Role, userId: string, asset: { owner_id: string }): boolean {
+  return role === 'admin' || (role === 'contributor' && asset.owner_id === userId)
+}
+
+export function canEditCollection(role: Role, userId: string, c: Collection): boolean {
+  return role === 'admin' || c.owner_id === userId
+}

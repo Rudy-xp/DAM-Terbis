@@ -346,7 +346,7 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
         )}
 
 
-        {fileName && cols.file >= 0 && (driveCols.id >= 0 || driveCols.link >= 0) && (
+        {isDriveConfigured && fileName && cols.file >= 0 && (driveCols.id >= 0 || driveCols.link >= 0) && (
           <section className="drive-box">
             <h3>Fichiers Google Drive</h3>
             <p className="muted small">
