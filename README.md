@@ -12,7 +12,7 @@ Web app de gestion d'une base de photos et de PDF.
 - Recherche par titre, description, nom de fichier ou tag
 - Fiche détail : aperçu (image ou PDF intégré), édition titre / description / tags, téléchargement, suppression
 - **Description et mots-clés générés par l'IA** (Google Gemini, offre gratuite) à l'envoi, modifiables ensuite ; bouton « Régénérer avec l'IA »
-- **Import de descriptions** depuis un fichier Excel (.xlsx) ou CSV, associées aux fichiers par leur nom (extension ignorée), pour les fichiers existants et les prochains envois
+- **Import de descriptions** depuis un fichier Excel (.xlsx) ou CSV, associées aux fichiers par leur nom (extension ignorée) et leur taille (pour distinguer les homonymes), pour les fichiers existants et les prochains envois ; colonnes « Lieu » et Vrai/Faux (Carte postale, Église…) converties en mots-clés
 - Bibliothèque partagée entre les utilisateurs connectés ; seul l'auteur d'un envoi peut le modifier ou le supprimer
 
 ## Architecture Supabase

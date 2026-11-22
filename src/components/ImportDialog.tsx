@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { buildRows, fileKey, guessColumns, type ImportRow } from '../lib/importMetadata'
+import { booleanColumns, buildRows, fileKey, guessColumns, pickRow, type Columns, type ImportRow } from '../lib/importMetadata'
 import { readTable } from '../lib/readTable'
 
 interface Props {
@@ -14,6 +14,7 @@ interface MyAsset {
   file_name: string
   description: string | null
   tags: string[]
+  size_bytes: number
 }
 
 async function fetchMyAssets(userId: string): Promise<MyAsset[]> {
@@ -21,7 +22,7 @@ async function fetchMyAssets(userId: string): Promise<MyAsset[]> {
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase
       .from('assets')
-      .select('id, file_name, description, tags')
+      .select('id, file_name, description, tags, size_bytes')
       .eq('owner_id', userId)
       .range(from, from + 999)
     if (error) throw error
@@ -34,7 +35,8 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
   const [fileName, setFileName] = useState<string | null>(null)
   const [table, setTable] = useState<string[][]>([])
   const [hasHeader, setHasHeader] = useState(true)
-  const [cols, setCols] = useState({ file: -1, description: -1, tags: -1 })
+  const [cols, setCols] = useState<Columns>({ file: -1, description: -1, tags: -1, size: -1, place: -1 })
+  const [flagCols, setFlagCols] = useState<number[]>([])
   const [overwrite, setOverwrite] = useState(true)
   const [assets, setAssets] = useState<MyAsset[] | null>(null)
   const [busy, setBusy] = useState(false)
@@ -58,8 +60,10 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
       setFileName(file.name)
       setTable(rows)
       const guess = guessColumns(rows[0])
-      setHasHeader(guess.file >= 0 || guess.description >= 0 || guess.tags >= 0)
+      const header = guess.file >= 0 || guess.description >= 0 || guess.tags >= 0
+      setHasHeader(header)
       setCols(guess)
+      setFlagCols(header ? booleanColumns(rows[0], rows.slice(1)) : [])
     } catch (e) {
       setError(`Lecture impossible : ${e instanceof Error ? e.message : e}. Utilisez un fichier .xlsx ou .csv.`)
     }
@@ -72,18 +76,25 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
     )
   }, [table, hasHeader])
 
-  const rows: ImportRow[] = useMemo(
-    () => (cols.file >= 0 ? buildRows(hasHeader ? table.slice(1) : table, cols) : []),
-    [table, hasHeader, cols],
+  const boolCols = useMemo(
+    () => (hasHeader && table.length ? booleanColumns(table[0], table.slice(1)) : []),
+    [table, hasHeader],
   )
 
-  const matches = useMemo(() => {
-    if (!assets) return []
-    const byKey = new Map(rows.map((r) => [r.file_key, r]))
-    return assets.flatMap((a) => {
-      const row = byKey.get(fileKey(a.file_name))
-      return row ? [{ asset: a, row }] : []
-    })
+  const rows: ImportRow[] = useMemo(
+    () => (cols.file >= 0 ? buildRows(headers, hasHeader ? table.slice(1) : table, cols, flagCols) : []),
+    [headers, table, hasHeader, cols, flagCols],
+  )
+
+  const { matches, ambiguous } = useMemo(() => {
+    if (!assets) return { matches: [], ambiguous: 0 }
+    const byKey = new Map<string, ImportRow[]>()
+    for (const r of rows) byKey.set(r.file_key, [...(byKey.get(r.file_key) ?? []), r])
+    const picks = assets.map((asset) => ({ asset, row: pickRow(byKey.get(fileKey(asset.file_name)) ?? [], asset.size_bytes) }))
+    return {
+      matches: picks.flatMap((p) => (p.row && p.row !== 'ambiguous' ? [{ asset: p.asset, row: p.row }] : [])),
+      ambiguous: picks.filter((p) => p.row === 'ambiguous').length,
+    }
   }, [assets, rows])
 
   async function apply() {
@@ -95,7 +106,7 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
         setProgress(`Enregistrement des descriptions… ${Math.min(i + 500, rows.length)}/${rows.length}`)
         const { error } = await supabase
           .from('imported_metadata')
-          .upsert(rows.slice(i, i + 500), { onConflict: 'owner_id,file_key' })
+          .upsert(rows.slice(i, i + 500), { onConflict: 'owner_id,file_key,size_bytes' })
         if (error) throw error
       }
       // 2. Met à jour les fichiers déjà présents
@@ -126,7 +137,7 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
     }
   }
 
-  const select = (key: 'file' | 'description' | 'tags', label: string, optional: boolean) => (
+  const select = (key: keyof Columns, label: string, optional: boolean) => (
     <label>
       {label}
       <select value={cols[key]} onChange={(e) => setCols({ ...cols, [key]: Number(e.target.value) })}>
@@ -165,7 +176,34 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
               {select('file', 'Nom du fichier *', false)}
               {select('description', 'Description', true)}
               {select('tags', 'Mots-clés', true)}
+              {select('size', 'Taille (octets)', true)}
+              {select('place', 'Lieu → mot-clé', true)}
             </div>
+            {cols.size < 0 && (
+              <p className="muted small">
+                Sans colonne « taille », deux fichiers de même nom dans des dossiers différents ne peuvent pas être
+                distingués : ils sont alors ignorés.
+              </p>
+            )}
+            {boolCols.length > 0 && (
+              <div className="field">
+                <span className="field-label">Colonnes Vrai/Faux ajoutées aux mots-clés quand la valeur est « Vrai »</span>
+                <div className="flags">
+                  {boolCols.map((i) => (
+                    <label key={i} className="check">
+                      <input
+                        type="checkbox"
+                        checked={flagCols.includes(i)}
+                        onChange={(e) =>
+                          setFlagCols(e.target.checked ? [...flagCols, i] : flagCols.filter((x) => x !== i))
+                        }
+                      />
+                      {headers[i]}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {cols.file >= 0 && (
               <>
@@ -193,6 +231,12 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
                   <strong>{rows.length}</strong> ligne{rows.length > 1 ? 's' : ''} exploitable{rows.length > 1 ? 's' : ''} ·{' '}
                   <strong>{assets ? matches.length : '…'}</strong> fichier{matches.length > 1 ? 's' : ''} déjà envoyé
                   {matches.length > 1 ? 's' : ''} correspond{matches.length > 1 ? 'ent' : ''}
+                  {ambiguous > 0 && (
+                    <>
+                      {' '}
+                      · <strong>{ambiguous}</strong> ignoré{ambiguous > 1 ? 's' : ''} (nom en double, taille différente)
+                    </>
+                  )}
                 </p>
                 <label className="check">
                   <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />

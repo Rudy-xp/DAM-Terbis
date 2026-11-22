@@ -95,7 +95,7 @@ export default function Uploader({ userId, onUploaded }: Props) {
     }
 
     // Description importée (fichier Excel / CSV) prioritaire sur l'IA
-    const imported = await lookupImported(file.name)
+    const imported = await lookupImported(file.name, file.size)
     const analyze = autoAnalyze && !imported?.description
 
     const { data: inserted, error: dbErr } = await supabase.from('assets').insert({
