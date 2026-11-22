@@ -1,7 +1,11 @@
 import { useRef, useState, type DragEvent } from 'react'
 import { BUCKET, supabase } from '../lib/supabase'
+import { queueAnalysis } from '../lib/ai'
+import { lookupImported } from '../lib/importMetadata'
 import type { AssetKind } from '../types'
-import { parseTags } from '../types'
+import { AI_ENABLED } from '../types'
+import TagEditor from './TagEditor'
+import { imagePreview, pdfPreview } from '../lib/preview'
 
 const MAX_BYTES = 50 * 1024 * 1024
 
@@ -22,25 +26,10 @@ function kindOf(file: File): AssetKind | null {
   return null
 }
 
-function imageSize(file: File): Promise<{ width: number; height: number } | null> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file)
-    const img = new Image()
-    img.onload = () => {
-      resolve({ width: img.naturalWidth, height: img.naturalHeight })
-      URL.revokeObjectURL(url)
-    }
-    img.onerror = () => {
-      resolve(null)
-      URL.revokeObjectURL(url)
-    }
-    img.src = url
-  })
-}
-
 export default function Uploader({ userId, onUploaded }: Props) {
+  const [autoAnalyze, setAutoAnalyze] = useState(AI_ENABLED)
   const input = useRef<HTMLInputElement>(null)
-  const [tags, setTags] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [dragging, setDragging] = useState(false)
 
@@ -53,30 +42,46 @@ export default function Uploader({ userId, onUploaded }: Props) {
     if (file.size > MAX_BYTES) return update({ status: 'error', error: 'Fichier > 50 Mo' })
 
     const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : kind === 'pdf' ? 'pdf' : 'bin'
-    const path = `${userId}/${crypto.randomUUID()}.${ext}`
-    const dims = kind === 'image' ? await imageSize(file) : null
+    const id = crypto.randomUUID()
+    const path = `${userId}/${id}.${ext}`
+    const meta = kind === 'image' ? await imagePreview(file) : await pdfPreview(file)
 
     const { error: upErr } = await supabase.storage
       .from(BUCKET)
       .upload(path, file, { contentType: file.type, upsert: false })
     if (upErr) return update({ status: 'error', error: upErr.message })
 
-    const { error: dbErr } = await supabase.from('assets').insert({
+    let thumbPath: string | null = null
+    if (meta?.jpeg) {
+      const tp = `${userId}/${id}_thumb.jpg`
+      const { error } = await supabase.storage.from(BUCKET).upload(tp, meta.jpeg, { contentType: 'image/jpeg' })
+      if (!error) thumbPath = tp
+    }
+
+    // Description importée (fichier Excel / CSV) prioritaire sur l'IA
+    const imported = await lookupImported(file.name, file.size)
+    const analyze = autoAnalyze && !imported?.description
+
+    const { data: inserted, error: dbErr } = await supabase.from('assets').insert({
       title: file.name.replace(/\.[^.]+$/, ''),
-      tags: parseTags(tags),
+      description: imported?.description ?? null,
+      tags: [...new Set([...tags, ...(imported?.tags ?? [])])],
       kind,
       file_path: path,
       file_name: file.name,
       mime_type: file.type,
       size_bytes: file.size,
-      width: dims?.width ?? null,
-      height: dims?.height ?? null,
-    })
+      width: kind === 'image' ? (meta?.width ?? null) : null,
+      height: kind === 'image' ? (meta?.height ?? null) : null,
+      thumb_path: thumbPath,
+      ai_status: analyze ? 'pending' : null,
+    }).select('id').single()
     if (dbErr) {
-      await supabase.storage.from(BUCKET).remove([path])
+      await supabase.storage.from(BUCKET).remove(thumbPath ? [path, thumbPath] : [path])
       return update({ status: 'error', error: dbErr.message })
     }
     update({ status: 'done' })
+    if (analyze) queueAnalysis(inserted.id, onUploaded)
   }
 
   async function handleFiles(list: FileList | null) {
@@ -131,10 +136,16 @@ export default function Uploader({ userId, onUploaded }: Props) {
           onChange={(e) => handleFiles(e.target.files)}
         />
       </div>
-      <label className="inline">
-        Tags appliqués à l'envoi
-        <input placeholder="ex. chantier, 2026, client-x" value={tags} onChange={(e) => setTags(e.target.value)} />
-      </label>
+      {AI_ENABLED && (
+        <label className="check">
+          <input type="checkbox" checked={autoAnalyze} onChange={(e) => setAutoAnalyze(e.target.checked)} />
+          ✨ Générer automatiquement la description et les mots-clés (IA)
+        </label>
+      )}
+      <div className="field">
+        <span className="field-label">Mots-clés ajoutés à tous les fichiers envoyés</span>
+        <TagEditor tags={tags} onChange={setTags} />
+      </div>
       {jobs.length > 0 && (
         <div className="jobs">
           <div className="jobs-head">

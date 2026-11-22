@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { BUCKET, isConfigured, supabase } from './lib/supabase'
+import { BUCKET, isConfigured, openedFromRecoveryLink, supabase } from './lib/supabase'
 import type { Asset, AssetKind } from './types'
-import { formatBytes } from './types'
+import { extensionOf, formatBytes } from './types'
 import Login from './components/Login'
+import NewPassword from './components/NewPassword'
 import Uploader from './components/Uploader'
 import AssetDetail from './components/AssetDetail'
+
+// Chargé à la demande (bibliothèques Excel/CSV)
+const ImportDialog = lazy(() => import('./components/ImportDialog'))
 
 const PAGE_SIZE = 48
 const URL_TTL = 60 * 60 // URLs signées valables 1 h
@@ -13,13 +17,17 @@ const URL_TTL = 60 * 60 // URLs signées valables 1 h
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState(false)
+  const [recovery, setRecovery] = useState(openedFromRecoveryLink)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session)
       setReady(true)
     })
-    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
+    const { data } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s)
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true)
+    })
     return () => data.subscription.unsubscribe()
   }, [])
 
@@ -36,6 +44,7 @@ export default function App() {
       </div>
     )
   if (!ready) return null
+  if (recovery && session) return <NewPassword onDone={() => setRecovery(false)} />
   if (!session) return <Login />
   return <Library session={session} />
 }
@@ -55,6 +64,7 @@ function Library({ session }: { session: Session }) {
   const [page, setPage] = useState(0)
   const [selected, setSelected] = useState<Asset | null>(null)
   const [showUpload, setShowUpload] = useState(false)
+  const [showImport, setShowImport] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -78,7 +88,12 @@ function Library({ session }: { session: Session }) {
     if (debounced) {
       // Échappe les caractères spéciaux du filtre PostgREST
       const s = debounced.replace(/[%_,(){}"\\]/g, ' ').trim()
-      const clauses = [`title.ilike.%${s}%`, `description.ilike.%${s}%`, `file_name.ilike.%${s}%`]
+      const clauses = [
+        `title.ilike.%${s}%`,
+        `description.ilike.%${s}%`,
+        `file_name.ilike.%${s}%`,
+        `source_path.ilike.%${s}%`,
+      ]
       if (/^[\p{L}\p{N}_-]+$/u.test(s)) clauses.push(`tags.cs.{${s.toLowerCase()}}`)
       if (s) q = q.or(clauses.join(','))
     }
@@ -88,11 +103,11 @@ function Library({ session }: { session: Session }) {
     const rows = (data ?? []) as Asset[]
     setAssets(rows)
     setTotal(count ?? 0)
+    // Garde la fiche ouverte à jour (ex. analyse IA terminée entre-temps)
+    setSelected((sel) => (sel ? (rows.find((r) => r.id === sel.id) ?? sel) : sel))
     if (rows.length) {
-      const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls(
-        rows.map((r) => r.file_path),
-        URL_TTL,
-      )
+      const paths = rows.flatMap((r) => [r.file_path, r.thumb_path].filter((p): p is string => Boolean(p)))
+      const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls(paths, URL_TTL)
       const map: Record<string, string> = {}
       signed?.forEach((s) => {
         if (s.path && s.signedUrl) map[s.path] = s.signedUrl
@@ -122,6 +137,7 @@ function Library({ session }: { session: Session }) {
         <button className="primary" onClick={() => setShowUpload((v) => !v)}>
           {showUpload ? 'Fermer' : '+ Ajouter'}
         </button>
+        <button onClick={() => setShowImport(true)}>Importer descriptions</button>
         <span className="muted small user">{session.user.email}</span>
         <button onClick={() => supabase.auth.signOut()}>Déconnexion</button>
       </header>
@@ -187,14 +203,19 @@ function Library({ session }: { session: Session }) {
             <li key={a.id}>
               <button className="tile" onClick={() => setSelected(a)}>
                 <div className="thumb">
-                  {a.kind === 'image' && urls[a.file_path] ? (
+                  {a.thumb_path && urls[a.thumb_path] ? (
+                    <img src={urls[a.thumb_path]} alt={a.title} loading="lazy" />
+                  ) : a.kind === 'image' && a.file_path && urls[a.file_path] ? (
                     <img src={urls[a.file_path]} alt={a.title} loading="lazy" />
                   ) : (
-                    <span className="pdf-badge">{a.kind === 'pdf' ? 'PDF' : '…'}</span>
+                    <span className="pdf-badge">{a.kind === 'pdf' ? 'PDF' : extensionOf(a.file_name)}</span>
                   )}
+                  {a.drive_file_id && <span className="drive-badge">Drive</span>}
+                  {a.ai_status === 'pending' && <span className="ai-badge">✨ Analyse…</span>}
                 </div>
                 <div className="tile-body">
                   <strong title={a.title}>{a.title}</strong>
+                  {a.description && <span className="tile-desc">{a.description}</span>}
                   <span className="muted small">
                     {formatBytes(a.size_bytes)} · {new Date(a.created_at).toLocaleDateString('fr-FR')}
                   </span>
@@ -219,11 +240,18 @@ function Library({ session }: { session: Session }) {
         </nav>
       )}
 
+      {showImport && (
+        <Suspense fallback={null}>
+          <ImportDialog userId={userId} onClose={() => setShowImport(false)} onDone={load} />
+        </Suspense>
+      )}
+
       {selected && (
         <AssetDetail
-          key={selected.id}
+          key={`${selected.id}-${selected.ai_generated_at ?? ''}`}
           asset={selected}
-          url={urls[selected.file_path]}
+          url={selected.file_path ? urls[selected.file_path] : undefined}
+          thumbUrl={selected.thumb_path ? urls[selected.thumb_path] : undefined}
           canEdit={selected.owner_id === userId}
           onClose={() => setSelected(null)}
           onChanged={load}
