@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { booleanColumns, buildRows, fileKey, guessColumns, pickRow, type Columns, type ImportRow } from '../lib/importMetadata'
 import { readTable } from '../lib/readTable'
+import { connectDrive, DriveAuthError, hasToken, isDriveConfigured } from '../lib/google'
+import { buildDriveRows, guessDriveColumns, importDriveRow, type DriveColumns, type DriveRow } from '../lib/driveImport'
 
 interface Props {
   userId: string
@@ -15,6 +17,15 @@ interface MyAsset {
   description: string | null
   tags: string[]
   size_bytes: number
+  drive_file_id: string | null
+}
+
+interface DriveProgress {
+  state: 'idle' | 'running' | 'paused' | 'done'
+  total: number
+  done: number
+  failed: { name: string; error: string }[]
+  message: string | null
 }
 
 async function fetchMyAssets(userId: string): Promise<MyAsset[]> {
@@ -22,7 +33,7 @@ async function fetchMyAssets(userId: string): Promise<MyAsset[]> {
   for (let from = 0; ; from += 1000) {
     const { data, error } = await supabase
       .from('assets')
-      .select('id, file_name, description, tags, size_bytes')
+      .select('id, file_name, description, tags, size_bytes, drive_file_id')
       .eq('owner_id', userId)
       .range(from, from + 999)
     if (error) throw error
@@ -43,6 +54,12 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
   const [progress, setProgress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [driveCols, setDriveCols] = useState<DriveColumns>({ id: -1, link: -1, path: -1 })
+  const [skipCopies, setSkipCopies] = useState(true)
+  const [drive, setDrive] = useState<DriveProgress>({ state: 'idle', total: 0, done: 0, failed: [], message: null })
+  const queueRef = useRef<DriveRow[] | null>(null)
+  const indexRef = useRef(0)
+  const stopRef = useRef(false)
 
   useEffect(() => {
     fetchMyAssets(userId)
@@ -64,6 +81,10 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
       setHasHeader(header)
       setCols(guess)
       setFlagCols(header ? booleanColumns(rows[0], rows.slice(1)) : [])
+      setDriveCols(header ? guessDriveColumns(rows[0]) : { id: -1, link: -1, path: -1 })
+      queueRef.current = null
+      indexRef.current = 0
+      setDrive({ state: 'idle', total: 0, done: 0, failed: [], message: null })
     } catch (e) {
       setError(`Lecture impossible : ${e instanceof Error ? e.message : e}. Utilisez un fichier .xlsx ou .csv.`)
     }
@@ -96,6 +117,80 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
       ambiguous: picks.filter((p) => p.row === 'ambiguous').length,
     }
   }, [assets, rows])
+
+  const driveRows = useMemo(
+    () =>
+      cols.file >= 0 && (driveCols.id >= 0 || driveCols.link >= 0)
+        ? buildDriveRows(headers, hasHeader ? table.slice(1) : table, cols, driveCols, flagCols, skipCopies)
+        : [],
+    [headers, table, hasHeader, cols, driveCols, flagCols, skipCopies],
+  )
+
+  const driveTodo = useMemo(() => {
+    if (!assets) return []
+    const ids = new Set(assets.map((a) => a.drive_file_id).filter(Boolean))
+    const keys = new Set(assets.map((a) => `${fileKey(a.file_name)}|${a.size_bytes}`))
+    return driveRows.filter((r) => !ids.has(r.driveId) && !(r.size && keys.has(`${fileKey(r.name)}|${r.size}`)))
+  }, [assets, driveRows])
+
+  const driveRunning = drive.state === 'running'
+  useEffect(() => {
+    if (!driveRunning) return
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [driveRunning])
+
+  async function runDrive() {
+    setDrive((d) => ({ ...d, message: null }))
+    try {
+      if (!hasToken()) await connectDrive()
+    } catch (e) {
+      return setDrive((d) => ({ ...d, message: e instanceof Error ? e.message : String(e) }))
+    }
+    queueRef.current ??= [...driveTodo]
+    const queue = queueRef.current
+    stopRef.current = false
+    let authLost = false
+    setDrive((d) => ({ ...d, state: 'running', total: queue.length }))
+
+    const worker = async () => {
+      while (indexRef.current < queue.length && !stopRef.current) {
+        if (!hasToken()) {
+          authLost = true
+          stopRef.current = true
+          break
+        }
+        const row = queue[indexRef.current++]
+        try {
+          await importDriveRow(row, userId)
+          setDrive((d) => ({ ...d, done: d.done + 1 }))
+        } catch (e) {
+          if (e instanceof DriveAuthError) {
+            queue.push(row) // à refaire après reconnexion
+            authLost = true
+            stopRef.current = true
+          } else {
+            const error = e instanceof Error ? e.message : String(e)
+            setDrive((d) => ({ ...d, failed: [...d.failed, { name: row.name, error }] }))
+          }
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: 3 }, worker))
+    onDone()
+    fetchMyAssets(userId).then(setAssets).catch(() => {})
+    const finished = indexRef.current >= queue.length
+    setDrive((d) => ({
+      ...d,
+      state: finished ? 'done' : 'paused',
+      message: finished
+        ? null
+        : authLost
+          ? 'L’accès Google expire au bout d’une heure : cliquez sur « Continuer » pour le renouveler.'
+          : 'Import en pause.',
+    }))
+  }
 
   async function apply() {
     setBusy(true)
@@ -152,9 +247,9 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
   )
 
   return (
-    <div className="overlay" onClick={busy ? undefined : onClose}>
+    <div className="overlay" onClick={busy || driveRunning ? undefined : onClose}>
       <div className="dialog card" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Importer des descriptions">
-        <button className="close" onClick={onClose} disabled={busy} aria-label="Fermer">
+        <button className="close" onClick={onClose} disabled={busy || driveRunning} aria-label="Fermer">
           ×
         </button>
         <h2>Importer des descriptions</h2>
@@ -247,6 +342,108 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
           </>
         )}
 
+
+        {fileName && cols.file >= 0 && (driveCols.id >= 0 || driveCols.link >= 0) && (
+          <section className="drive-box">
+            <h3>Fichiers Google Drive</h3>
+            <p className="muted small">
+              Le fichier contient les identifiants Drive : l'app peut cataloguer les fichiers directement. Les originaux
+              restent dans Drive ; seul un aperçu léger est enregistré, avec un lien « Ouvrir dans Drive ».
+            </p>
+            {!isDriveConfigured ? (
+              <p className="error small">
+                Connexion Google non configurée : ajoutez la variable <code>VITE_GOOGLE_CLIENT_ID</code> (voir le README).
+              </p>
+            ) : (
+              <>
+                <div className="cols">
+                  <label>
+                    Identifiant Drive
+                    <select value={driveCols.id} onChange={(e) => setDriveCols({ ...driveCols, id: Number(e.target.value) })}>
+                      <option value={-1}>— aucune —</option>
+                      {headers.map((h, i) => (
+                        <option key={i} value={i}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Lien Drive
+                    <select value={driveCols.link} onChange={(e) => setDriveCols({ ...driveCols, link: Number(e.target.value) })}>
+                      <option value={-1}>— aucune —</option>
+                      {headers.map((h, i) => (
+                        <option key={i} value={i}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Chemin d'origine
+                    <select value={driveCols.path} onChange={(e) => setDriveCols({ ...driveCols, path: Number(e.target.value) })}>
+                      <option value={-1}>— aucune —</option>
+                      {headers.map((h, i) => (
+                        <option key={i} value={i}>
+                          {h}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={skipCopies}
+                    disabled={drive.state !== 'idle'}
+                    onChange={(e) => setSkipCopies(e.target.checked)}
+                  />
+                  Ignorer les copies identiques (même nom et même taille dans plusieurs dossiers)
+                </label>
+                <p className="summary">
+                  <strong>{driveRows.length}</strong> fichier{driveRows.length > 1 ? 's' : ''} Drive ·{' '}
+                  <strong>{assets ? driveRows.length - driveTodo.length : '…'}</strong> déjà dans l'app ·{' '}
+                  <strong>{assets ? driveTodo.length : '…'}</strong> à cataloguer
+                </p>
+                {drive.state !== 'idle' && (
+                  <>
+                    <progress max={drive.total || 1} value={drive.done + drive.failed.length} />
+                    <p className="small">
+                      {drive.done} catalogué{drive.done > 1 ? 's' : ''}
+                      {drive.failed.length > 0 && <> · {drive.failed.length} en erreur</>} sur {drive.total}
+                      {drive.state === 'done' && ' — terminé ✓'}
+                    </p>
+                  </>
+                )}
+                {drive.message && <p className="muted small">{drive.message}</p>}
+                {drive.failed.length > 0 && (
+                  <details>
+                    <summary className="small">Voir les erreurs</summary>
+                    <ul className="small failed">
+                      {drive.failed.map((f, i) => (
+                        <li key={i}>
+                          <strong>{f.name}</strong> : {f.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <div className="actions">
+                  {driveRunning ? (
+                    <button onClick={() => (stopRef.current = true)}>Pause</button>
+                  ) : (
+                    drive.state !== 'done' && (
+                      <button className="primary" onClick={runDrive} disabled={!assets || (drive.state === 'idle' && !driveTodo.length)}>
+                        {drive.state === 'paused' ? 'Continuer' : 'Connecter Google Drive et importer'}
+                      </button>
+                    )
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
         {error && <p className="error">{error}</p>}
         {progress && <p className="muted small">{progress}</p>}
         {done && (
@@ -257,12 +454,12 @@ export default function ImportDialog({ userId, onClose, onDone }: Props) {
         )}
 
         <div className="actions">
-          <button onClick={onClose} disabled={busy}>
-            {done ? 'Fermer' : 'Annuler'}
+          <button onClick={onClose} disabled={busy || driveRunning}>
+            {done || drive.state === 'done' ? 'Fermer' : 'Annuler'}
           </button>
           {!done && (
             <button className="primary" onClick={apply} disabled={busy || !rows.length || !assets}>
-              {busy ? 'Import…' : 'Importer'}
+              {busy ? 'Import…' : 'Importer les descriptions'}
             </button>
           )}
         </div>

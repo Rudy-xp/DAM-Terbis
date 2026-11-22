@@ -1,4 +1,4 @@
-export type AssetKind = 'image' | 'pdf'
+export type AssetKind = 'image' | 'pdf' | 'other'
 
 export interface Asset {
   id: string
@@ -7,7 +7,7 @@ export interface Asset {
   description: string | null
   tags: string[]
   kind: AssetKind
-  file_path: string
+  file_path: string | null
   file_name: string
   mime_type: string
   size_bytes: number
@@ -17,6 +17,9 @@ export interface Asset {
   ai_status: 'pending' | 'done' | 'error' | null
   ai_error: string | null
   ai_generated_at: string | null
+  drive_file_id: string | null
+  drive_url: string | null
+  source_path: string | null
   created_at: string
   updated_at: string
 }
@@ -35,4 +38,12 @@ export function formatBytes(n: number): string {
 
 export function parseTags(input: string): string[] {
   return [...new Set(input.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))]
+}
+
+/** Fonctions IA (Gemini) affichées seulement si VITE_AI_ENABLED=true. */
+export const AI_ENABLED = import.meta.env.VITE_AI_ENABLED === 'true'
+
+export function extensionOf(name: string): string {
+  const m = name.match(/\.([a-z0-9]{1,8})$/i)
+  return m ? m[1].toUpperCase() : 'FICHIER'
 }

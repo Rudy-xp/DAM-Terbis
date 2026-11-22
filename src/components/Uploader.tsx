@@ -3,7 +3,8 @@ import { BUCKET, supabase } from '../lib/supabase'
 import { queueAnalysis } from '../lib/ai'
 import { lookupImported } from '../lib/importMetadata'
 import type { AssetKind } from '../types'
-import { parseTags } from '../types'
+import { AI_ENABLED, parseTags } from '../types'
+import { imagePreview, pdfPreview } from '../lib/preview'
 
 const MAX_BYTES = 50 * 1024 * 1024
 
@@ -24,46 +25,8 @@ function kindOf(file: File): AssetKind | null {
   return null
 }
 
-const THUMB_MAX = 1568
-
-/** Lit les dimensions et produit une vignette JPEG (grille + analyse IA). */
-function makeThumbnail(file: File): Promise<{ width: number; height: number; thumb: Blob | null } | null> {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(file)
-    const img = new Image()
-    img.onload = () => {
-      const { naturalWidth: width, naturalHeight: height } = img
-      const scale = Math.min(1, THUMB_MAX / Math.max(width, height))
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.max(1, Math.round(width * scale))
-      canvas.height = Math.max(1, Math.round(height * scale))
-      const ctx = canvas.getContext('2d')
-      if (!ctx) {
-        URL.revokeObjectURL(url)
-        return resolve({ width, height, thumb: null })
-      }
-      ctx.fillStyle = '#fff'
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
-      canvas.toBlob(
-        (blob) => {
-          URL.revokeObjectURL(url)
-          resolve({ width, height, thumb: blob })
-        },
-        'image/jpeg',
-        0.85,
-      )
-    }
-    img.onerror = () => {
-      URL.revokeObjectURL(url)
-      resolve(null)
-    }
-    img.src = url
-  })
-}
-
 export default function Uploader({ userId, onUploaded }: Props) {
-  const [autoAnalyze, setAutoAnalyze] = useState(true)
+  const [autoAnalyze, setAutoAnalyze] = useState(AI_ENABLED)
   const input = useRef<HTMLInputElement>(null)
   const [tags, setTags] = useState('')
   const [jobs, setJobs] = useState<Job[]>([])
@@ -80,7 +43,7 @@ export default function Uploader({ userId, onUploaded }: Props) {
     const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : kind === 'pdf' ? 'pdf' : 'bin'
     const id = crypto.randomUUID()
     const path = `${userId}/${id}.${ext}`
-    const meta = kind === 'image' ? await makeThumbnail(file) : null
+    const meta = kind === 'image' ? await imagePreview(file) : await pdfPreview(file)
 
     const { error: upErr } = await supabase.storage
       .from(BUCKET)
@@ -88,9 +51,9 @@ export default function Uploader({ userId, onUploaded }: Props) {
     if (upErr) return update({ status: 'error', error: upErr.message })
 
     let thumbPath: string | null = null
-    if (meta?.thumb) {
+    if (meta?.jpeg) {
       const tp = `${userId}/${id}_thumb.jpg`
-      const { error } = await supabase.storage.from(BUCKET).upload(tp, meta.thumb, { contentType: 'image/jpeg' })
+      const { error } = await supabase.storage.from(BUCKET).upload(tp, meta.jpeg, { contentType: 'image/jpeg' })
       if (!error) thumbPath = tp
     }
 
@@ -107,8 +70,8 @@ export default function Uploader({ userId, onUploaded }: Props) {
       file_name: file.name,
       mime_type: file.type,
       size_bytes: file.size,
-      width: meta?.width ?? null,
-      height: meta?.height ?? null,
+      width: kind === 'image' ? (meta?.width ?? null) : null,
+      height: kind === 'image' ? (meta?.height ?? null) : null,
       thumb_path: thumbPath,
       ai_status: analyze ? 'pending' : null,
     }).select('id').single()
@@ -172,10 +135,12 @@ export default function Uploader({ userId, onUploaded }: Props) {
           onChange={(e) => handleFiles(e.target.files)}
         />
       </div>
-      <label className="check">
-        <input type="checkbox" checked={autoAnalyze} onChange={(e) => setAutoAnalyze(e.target.checked)} />
-        ✨ Générer automatiquement la description et les mots-clés (IA)
-      </label>
+      {AI_ENABLED && (
+        <label className="check">
+          <input type="checkbox" checked={autoAnalyze} onChange={(e) => setAutoAnalyze(e.target.checked)} />
+          ✨ Générer automatiquement la description et les mots-clés (IA)
+        </label>
+      )}
       <label className="inline">
         Tags appliqués à l'envoi
         <input placeholder="ex. chantier, 2026, client-x" value={tags} onChange={(e) => setTags(e.target.value)} />

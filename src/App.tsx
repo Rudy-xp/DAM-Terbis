@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import type { Session } from '@supabase/supabase-js'
 import { BUCKET, isConfigured, supabase } from './lib/supabase'
 import type { Asset, AssetKind } from './types'
-import { formatBytes } from './types'
+import { extensionOf, formatBytes } from './types'
 import Login from './components/Login'
 import Uploader from './components/Uploader'
 import AssetDetail from './components/AssetDetail'
@@ -82,7 +82,12 @@ function Library({ session }: { session: Session }) {
     if (debounced) {
       // Échappe les caractères spéciaux du filtre PostgREST
       const s = debounced.replace(/[%_,(){}"\\]/g, ' ').trim()
-      const clauses = [`title.ilike.%${s}%`, `description.ilike.%${s}%`, `file_name.ilike.%${s}%`]
+      const clauses = [
+        `title.ilike.%${s}%`,
+        `description.ilike.%${s}%`,
+        `file_name.ilike.%${s}%`,
+        `source_path.ilike.%${s}%`,
+      ]
       if (/^[\p{L}\p{N}_-]+$/u.test(s)) clauses.push(`tags.cs.{${s.toLowerCase()}}`)
       if (s) q = q.or(clauses.join(','))
     }
@@ -95,7 +100,7 @@ function Library({ session }: { session: Session }) {
     // Garde la fiche ouverte à jour (ex. analyse IA terminée entre-temps)
     setSelected((sel) => (sel ? (rows.find((r) => r.id === sel.id) ?? sel) : sel))
     if (rows.length) {
-      const paths = rows.flatMap((r) => (r.thumb_path ? [r.file_path, r.thumb_path] : [r.file_path]))
+      const paths = rows.flatMap((r) => [r.file_path, r.thumb_path].filter((p): p is string => Boolean(p)))
       const { data: signed } = await supabase.storage.from(BUCKET).createSignedUrls(paths, URL_TTL)
       const map: Record<string, string> = {}
       signed?.forEach((s) => {
@@ -142,12 +147,12 @@ function Library({ session }: { session: Session }) {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div className="segmented">
-          {(['all', 'image', 'pdf'] as const).map((k) => (
+          {(['all', 'image', 'pdf', 'other'] as const).map((k) => (
             <button key={k} className={kind === k ? 'active' : ''} onClick={() => {
                 setKind(k)
                 setPage(0)
               }}>
-              {k === 'all' ? 'Tout' : k === 'image' ? 'Photos' : 'PDF'}
+              {k === 'all' ? 'Tout' : k === 'image' ? 'Photos' : k === 'pdf' ? 'PDF' : 'Autres'}
             </button>
           ))}
         </div>
@@ -192,11 +197,16 @@ function Library({ session }: { session: Session }) {
             <li key={a.id}>
               <button className="tile" onClick={() => setSelected(a)}>
                 <div className="thumb">
-                  {a.kind === 'image' && urls[a.thumb_path ?? a.file_path] ? (
-                    <img src={urls[a.thumb_path ?? a.file_path]} alt={a.title} loading="lazy" />
+                  {a.thumb_path && urls[a.thumb_path] ? (
+                    <img src={urls[a.thumb_path]} alt={a.title} loading="lazy" />
+                  ) : a.kind === 'image' && a.file_path && urls[a.file_path] ? (
+                    <img src={urls[a.file_path]} alt={a.title} loading="lazy" />
                   ) : (
-                    <span className="pdf-badge">{a.kind === 'pdf' ? 'PDF' : '…'}</span>
+                    <span className={`pdf-badge${a.kind === 'other' ? ' other' : ''}`}>
+                      {a.kind === 'pdf' ? 'PDF' : extensionOf(a.file_name)}
+                    </span>
                   )}
+                  {a.drive_file_id && <span className="drive-badge">Drive</span>}
                   {a.ai_status === 'pending' && <span className="ai-badge">✨ Analyse…</span>}
                 </div>
                 <div className="tile-body">
@@ -236,7 +246,8 @@ function Library({ session }: { session: Session }) {
         <AssetDetail
           key={`${selected.id}-${selected.ai_generated_at ?? ''}`}
           asset={selected}
-          url={urls[selected.file_path]}
+          url={selected.file_path ? urls[selected.file_path] : undefined}
+          thumbUrl={selected.thumb_path ? urls[selected.thumb_path] : undefined}
           canEdit={selected.owner_id === userId}
           onClose={() => setSelected(null)}
           onChanged={load}
