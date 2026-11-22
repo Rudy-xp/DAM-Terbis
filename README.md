@@ -16,7 +16,11 @@ Web app de gestion d'une base de photos et de PDF.
 - Aperçus automatiques : photos et 1re page des PDF
 - *(désactivé par défaut)* description et mots-clés générés par l'IA (Google Gemini), activable avec `VITE_AI_ENABLED=true`
 - **Import de descriptions** depuis un fichier Excel (.xlsx) ou CSV, associées aux fichiers par leur nom (extension ignorée) et leur taille (pour distinguer les homonymes), pour les fichiers existants et les prochains envois ; colonnes « Lieu » et Vrai/Faux (Carte postale, Église…) converties en mots-clés
-- Bibliothèque partagée entre les utilisateurs connectés ; seul l'auteur d'un envoi peut le modifier ou le supprimer
+- **Accès par rôle** : administrateur (rudy@dots.lu), contributeur, lecteur — page « Utilisateurs » pour l'admin
+- **Filtre sur plusieurs mots-clés** à la fois (fichiers ayant tous les mots-clés choisis), suggestions avec compteurs
+- **Gestion des mots-clés** (admin) : renommer, fusionner, supprimer sur tous les fichiers
+- **Sélection multiple** : ajouter à une collection, ajouter/retirer des mots-clés, télécharger en ZIP
+- **Collections** personnelles ou publiques ; téléchargement de toute une collection en ZIP (avec `descriptions.csv`)
 
 ## Architecture Supabase
 
@@ -24,7 +28,10 @@ Web app de gestion d'une base de photos et de PDF.
 | --- | --- |
 | Table `public.assets` | métadonnées (titre, description, tags, type, taille, dimensions, chemin du fichier, propriétaire) |
 | Bucket `assets` (privé) | fichiers rangés sous `<user_id>/<uuid>.<ext>`, accès via URL signées (1 h) |
-| RLS | lecture : tout utilisateur connecté ; écriture / suppression : propriétaire uniquement ; aucun accès anonyme |
+| Table `public.profiles` | rôle de chaque utilisateur (`admin`, `contributor`, `reader`) ; créé à l'inscription, lecteur par défaut |
+| Tables `collections`, `collection_items` | collections personnelles (`private`) ou publiques (`public`) |
+| Fonctions | `tag_counts()`, `rename_tag()`, `delete_tag()` (admin), `my_role()` |
+| RLS | lecteur : lecture + collections personnelles ; contributeur : ajout et modification de ses fichiers, collections publiques ; admin : tout ; aucun accès anonyme |
 
 | Edge Function `analyze-asset` | envoie la vignette (photo) ou le PDF à Gemini, enregistre la description et fusionne les mots-clés avec les tags existants |
 | Table `public.imported_metadata` | descriptions importées, indexées par nom de fichier normalisé (propriétaire uniquement) |

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { BUCKET, supabase } from '../lib/supabase'
 import { analyzeAsset } from '../lib/ai'
-import type { Asset } from '../types'
+import type { Asset, TagCount } from '../types'
 import { AI_ENABLED, formatBytes } from '../types'
 import TagEditor from './TagEditor'
 
@@ -10,11 +10,24 @@ interface Props {
   url: string | undefined
   thumbUrl: string | undefined
   canEdit: boolean
+  allTags: TagCount[]
   onClose: () => void
   onChanged: () => void
+  onAddToCollection: () => void
+  onTagClick: (tag: string) => void
 }
 
-export default function AssetDetail({ asset, url, thumbUrl, canEdit, onClose, onChanged }: Props) {
+export default function AssetDetail({
+  asset,
+  url,
+  thumbUrl,
+  canEdit,
+  allTags,
+  onClose,
+  onChanged,
+  onAddToCollection,
+  onTagClick,
+}: Props) {
   const [title, setTitle] = useState(asset.title)
   const [description, setDescription] = useState(asset.description ?? '')
   const [tags, setTags] = useState<string[]>(asset.tags)
@@ -126,7 +139,13 @@ export default function AssetDetail({ asset, url, thumbUrl, canEdit, onClose, on
           </label>
           <div className="field">
             <span className="field-label">Mots-clés</span>
-            <TagEditor tags={tags} onChange={setTags} disabled={!canEdit || analyzing} />
+            <TagEditor
+              tags={tags}
+              onChange={setTags}
+              disabled={!canEdit || analyzing}
+              suggestions={allTags.map((t) => t.tag)}
+              onTagClick={onTagClick}
+            />
           </div>
           {canEdit && AI_ENABLED && (
             <div className="ai-row">
@@ -165,6 +184,7 @@ export default function AssetDetail({ asset, url, thumbUrl, canEdit, onClose, on
           {error && <p className="error">{error}</p>}
           <div className="actions">
             <button onClick={download}>{asset.file_path ? 'Télécharger' : 'Ouvrir dans Drive'}</button>
+            <button onClick={onAddToCollection}>+ Collection</button>
             {canEdit && (
               <>
                 <button className="primary" onClick={save} disabled={busy || analyzing}>
@@ -176,7 +196,7 @@ export default function AssetDetail({ asset, url, thumbUrl, canEdit, onClose, on
               </>
             )}
           </div>
-          {!canEdit && <p className="muted small">Seul l'auteur de l'envoi peut modifier ce fichier.</p>}
+          {!canEdit && <p className="muted small">Lecture seule. Cliquez sur un mot-clé pour filtrer la bibliothèque.</p>}
         </aside>
       </div>
     </div>

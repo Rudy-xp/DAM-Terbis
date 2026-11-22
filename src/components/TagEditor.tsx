@@ -1,14 +1,19 @@
-import { useState, type KeyboardEvent } from 'react'
+import { useId, useState, type KeyboardEvent } from 'react'
 import { parseTags } from '../types'
 
 interface Props {
   tags: string[]
   onChange: (tags: string[]) => void
   disabled?: boolean
+  /** Mots-clés existants proposés pendant la saisie */
+  suggestions?: string[]
+  /** En lecture seule : clic sur un mot-clé (ex. pour filtrer) */
+  onTagClick?: (tag: string) => void
 }
 
-export default function TagEditor({ tags, onChange, disabled }: Props) {
+export default function TagEditor({ tags, onChange, disabled, suggestions, onTagClick }: Props) {
   const [draft, setDraft] = useState('')
+  const listId = useId()
 
   function commit() {
     const added = parseTags(draft)
@@ -29,7 +34,13 @@ export default function TagEditor({ tags, onChange, disabled }: Props) {
     <div className={`tag-editor${disabled ? ' disabled' : ''}`}>
       {tags.map((t) => (
         <span key={t} className="chip">
-          {t}
+          {disabled && onTagClick ? (
+            <button type="button" className="chip-link" title="Filtrer sur ce mot-clé" onClick={() => onTagClick(t)}>
+              {t}
+            </button>
+          ) : (
+            t
+          )}
           {!disabled && (
             <button type="button" aria-label={`Retirer ${t}`} onClick={() => onChange(tags.filter((x) => x !== t))}>
               ×
@@ -44,7 +55,17 @@ export default function TagEditor({ tags, onChange, disabled }: Props) {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKey}
           onBlur={commit}
+          list={suggestions?.length ? listId : undefined}
         />
+      )}
+      {!disabled && suggestions && suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions
+            .filter((s) => !tags.includes(s))
+            .map((s) => (
+              <option key={s} value={s} />
+            ))}
+        </datalist>
       )}
     </div>
   )
